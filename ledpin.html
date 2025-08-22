@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ESP32 LED Controller</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; background: #111; color: #fff; }
+    h1 { color: #00eaff; }
+    button, input[type=range] { margin: 10px; padding: 10px; font-size: 16px; }
+    canvas { border: 2px solid #00eaff; border-radius: 50%; cursor: crosshair; }
+  </style>
+</head>
+<body>
+  <h1>ESP32 LED Controller</h1>
+  <p id="status">Disconnected</p>
+  <p id="battery">Pin: 0%</p>
+
+  <!-- Button controls -->
+  <button id="btnConnect">Connect BLE</button>
+  <button id="btnOn">ON</button>
+  <button id="btnOff">OFF</button>
+  <button id="btnManual">Manual</button>
+  <button id="btnBattery">Battery Mode</button>
+  <button id="btnMusic">Music Mode</button>
+
+  <!-- Brightness control -->
+  <div>
+    <label>Brightness:</label>
+    <input type="range" id="brightness" min="0" max="255" value="128">
+  </div>
+
+  <!-- Color wheel -->
+  <h3>Chọn màu</h3>
+  <canvas id="colorWheel" width="250" height="250"></canvas>
+
+  <script>
+    // =====================
+    // Color Wheel Generator
+    // =====================
+    const canvas = document.getElementById("colorWheel");
+    const ctx = canvas.getContext("2d");
+    const radius = canvas.width / 2;
+    const toRad = angle => (angle * Math.PI) / 180;
+
+    for (let angle = 0; angle < 360; angle += 1) {
+      const start = toRad(angle);
+      const end = toRad(angle + 1);
+      ctx.beginPath();
+      ctx.moveTo(radius, radius);
+      ctx.arc(radius, radius, radius, start, end);
+      ctx.closePath();
+      ctx.fillStyle = `hsl(${angle}, 100%, 50%)`;
+      ctx.fill();
+    }
+
+    // Detect click color
+    canvas.addEventListener("click", e => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const imgData = ctx.getImageData(x, y, 1, 1).data;
+      const r = imgData[0], g = imgData[1], b = imgData[2];
+      alert(`Chọn màu: RGB(${r},${g},${b})`);
+      sendToESP32(`COLOR:${r},${g},${b}`);
+    });
+
+    // =====================
+    // Bluetooth (Web Bluetooth API)
+    // =====================
+    let device, server, service, characteristic;
+
+    async function connectBLE() {
+      try {
+        device = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: ['battery_service', '12345678-1234-5678-1234-56789abcdef0']
+        });
+        server = await device.gatt.connect();
+        document.getElementById("status").textContent = "Connected ✅";
+
+        // Pin (Battery Service)
+        const batteryService = await server.getPrimaryService('battery_service');
+        const batteryLevel = await batteryService.getCharacteristic('battery_level');
+        const value = await batteryLevel.readValue();
+        const percent = value.getUint8(0);
+        document.getElementById("battery").textContent = "Pin: " + percent + "%";
+
+        // Custom Service cho ESP32
+        service = await server.getPrimaryService('12345678-1234-5678-1234-56789abcdef0');
+        characteristic = await service.getCharacteristic('12345678-1234-5678-1234-56789abcdef1');
+      } catch (error) {
+        console.error(error);
+        document.getElementById("status").textContent = "Connect Failed ❌";
+      }
+    }
+
+    async function sendToESP32(data) {
+      if (characteristic) {
+        let enc = new TextEncoder();
+        await characteristic.writeValue(enc.encode(data));
+      } else {
+        console.log("Not connected!");
+      }
+    }
+
+    // =====================
+    // UI Events
+    // =====================
+    document.getElementById("btnConnect").addEventListener("click", connectBLE);
+    document.getElementById("btnOn").addEventListener("click", () => sendToESP32("ON"));
+    document.getElementById("btnOff").addEventListener("click", () => sendToESP32("OFF"));
+    document.getElementById("btnManual").addEventListener("click", () => sendToESP32("MODE:MANUAL"));
+    document.getElementById("btnBattery").addEventListener("click", () => sendToESP32("MODE:BATTERY"));
+    document.getElementById("btnMusic").addEventListener("click", startMic);
+
+    // Brightness
+    document.getElementById("brightness").addEventListener("input", e => {
+      sendToESP32(`BRIGHT:${e.target.value}`);
+    });
+
+    // =====================
+    // Mic (Music Mode)
+    // =====================
+    async function startMic() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const audioCtx = new AudioContext();
+        const analyser = audioCtx.createAnalyser();
+        const source = audioCtx.createMediaStreamSource(stream);
+        source.connect(analyser);
+        analyser.fftSize = 256;
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+
+        function update() {
+          analyser.getByteFrequencyData(dataArray);
+          let avg = dataArray.reduce((a, b) => a + b, 0) / bufferLength;
+          let level = Math.min(255, Math.floor(avg));
+          sendToESP32(`MUSIC:${level}`);
+          requestAnimationFrame(update);
+        }
+        update();
+      } catch (err) {
+        console.error("Mic error:", err);
+      }
+    }
+  </script>
+</body>
+</html>
